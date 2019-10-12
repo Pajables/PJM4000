@@ -1,0 +1,740 @@
+//X motor // Pump 1
+const int asteppin =54;
+const int adirpin =55;
+const int aenpin = 38;
+const int arefpin = 3; //xmin pin ramps
+
+// Y motor // Pump 2
+const int bsteppin = 60;
+const int bdirpin = 61;
+const int benpin = 56;
+const int brefpin = 2; //xmax pin ramps
+
+//Z motor //pump 3
+const int csteppin = 46;
+const int cdirpin = 48;
+const int cenpin = 62;
+const int crefpin = 14; //ymin pin ramps
+
+//E0 motor // Valve 1
+const int bvalvstep = 36;
+const int bvalvdir = 34;
+const int bvalven = 30;
+const int bvalvref = 15; //ymax pin ramps
+
+//E1 motor // Valve 2
+const int avalvstep = 26;
+const int avalvdir = 28;
+const int avalven = 24;
+const int avalvref = 18; //zmin pin ramps
+
+// Flow rate formula
+float P =8; // lead of threaded rod in mm (thread has 4 starts and pitch of 2mm) initialised as float for division 
+float SPR = 3200;// steps per revolution // microsteps in this case 
+int x[6]={58,2,42,58,20,90};  //!!!!the lengths for 2,20 and 50 have not been measured!!!!!! //length of the syringe that accounts for its volume
+
+//Syringe info
+int vola=0 , volb = 0, volc = 0;
+float voladdeda=0, voladdedb=0, voladdedc=0;
+int flowa=0, flowb=0, flowc=0;
+int syra=3, syrb=3, syrc=3;
+int syravol=0,syrbvol=0, syrcvol=0;
+float xa=x[3], xb = x[3], xc=x[3]; //length of syringes
+float corr = 0.993;// correction factor for the volume dispensed
+int syringe[6]={1,2,5,10,20,60}; //syringe volumes
+float syringefactora, syringefactorb, syringefactorc;
+
+//Stepping variables
+long delayV=500; 
+long delayA=0,delayB=0, delayC=0; //time delay for pulses. shorter delay gives faster speed.
+long delayRefill = 1000;
+int delayfactor = 0.5; //factor to adjust for delays in code poll rate. Found from time to pump 1ml at 500 microL/min
+long curA=0,prevA=0,curB =0, prevB=0,curC=0,prevC=0;
+int countp1=0, countp2=0, countp3=0;
+int countv1=0, countv2=0;
+int Aon=0, Bon=0, Con=0; //motor on/off
+
+//Homing variables
+int home1 = 0, home2 =0, home3 = 0;
+int rev1 = 0, rev2 = 0, rev3 = 0;
+float trav1 = 0, trav2 =0, trav3=0;
+
+// Setting up multiflow valve. Each valve connected to a pump has four ports. 1=system, 2=reservoir for refilling, 3=waste and 4=?
+int vacount=0;
+int vbcount=0;
+
+long refilla=0;
+long refillb=0;
+long refillcounta=0;
+long refillcountb=0;
+
+char getkey;
+
+//Setting up the display and Keypad
+#include <Keyboard.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+LiquidCrystal_I2C lcd(0x27,20,4);// i^2C address is 0x27 and we are using a 20x4 character display
+
+#include <Keypad.h>
+const byte ROWS=4;
+const byte COLS=4;
+char keys[ROWS][COLS]={
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'},
+};
+byte rowPins[ROWS]={33,31,29,27};
+byte colPins[COLS]={25,23,17,16};
+Keypad keypad=Keypad(makeKeymap(keys),rowPins,colPins,ROWS,COLS);
+
+//// function ReadKeyD// for inputting flow rate and volume required for reaction
+int ReadKeyD(int column, int row, int x){
+  char keypressed = ' ';
+  int ZReturn=0;
+  int i=0;
+  String SInput=" ";
+  char StopChar='-';
+  char EnterChar="-";
+  lcd.setCursor(column,row);
+  lcd.print( '_' );
+  column++;
+  i++;
+  do {
+    keypressed= keypad.getKey();
+    
+    if (isDigit(keypressed)==true){
+      if(i<x){
+        SInput+=keypressed; // same as SInput=SInput+keypressed;
+        lcd.setCursor(column,row);
+        lcd.print(keypressed);
+        column++;
+        i++;
+        if (i<x){
+          lcd.print("_");
+        }
+      }
+    }
+   }while ((keypressed!='#'));
+
+   if (column<20){
+    lcd.setCursor(column,row);
+    lcd.print(" ");
+   }
+
+  EnterChar= '-';
+  StopChar= '-';
+  return SInput.toInt();
+}
+//// end of ReadKeyD function 
+
+//stat screen function
+void StatScreen(int vola, int flowa, int syravol, int volb, int flowb, int syrbvol, int volc, int flowc, int syrcvol) //displays pump status screen
+{
+  lcd.clear();
+  lcd.print("SyrA:");lcd.print(syravol);lcd.print("ml ");lcd.print(flowa);lcd.print("\344L/min");
+  lcd.setCursor(0,1);
+  lcd.print("SyrB:");lcd.print(syrbvol);lcd.print("ml ");lcd.print(flowb);lcd.print("\344L/min");
+  lcd.setCursor(0,2);
+  lcd.print("SyrC:");lcd.print(syrcvol);lcd.print("ml ");lcd.print(flowc);lcd.print("\344L/min");
+  lcd.setCursor(0,3);
+  lcd.print("A");lcd.print(vola);lcd.print("ml ");lcd.print("B");lcd.print(volb);lcd.print("ml ");lcd.print("C");lcd.print(volc);lcd.print("ml");
+}
+
+//Main body
+void setup() 
+{
+Serial.begin(9600);
+
+//define pump motors
+pinMode(asteppin,OUTPUT);
+pinMode(adirpin,OUTPUT);
+pinMode(aenpin,OUTPUT);
+pinMode(arefpin,INPUT);
+digitalWrite(aenpin,HIGH);// motor off
+
+pinMode(bsteppin,OUTPUT);
+pinMode(bdirpin,OUTPUT);
+pinMode(benpin,OUTPUT);
+pinMode(brefpin,INPUT);
+digitalWrite(benpin,HIGH);//motor off
+
+pinMode(csteppin,OUTPUT);
+pinMode(cdirpin,OUTPUT);
+pinMode(cenpin,OUTPUT);
+pinMode(crefpin,INPUT);
+digitalWrite(cenpin,HIGH);//motor off
+
+// define valve motors
+pinMode(avalven,OUTPUT);
+pinMode(avalvdir,OUTPUT);
+pinMode(avalvstep,OUTPUT);
+digitalWrite(avalven,HIGH);
+
+pinMode(bvalven,OUTPUT);
+pinMode(bvalvdir,OUTPUT);
+pinMode(bvalvstep,OUTPUT);
+digitalWrite(bvalven,HIGH);
+
+lcd.init();
+lcd.backlight();
+//set up the lcd display
+lcd.clear();
+lcd.setCursor(0,0);lcd.print("A-C:Start/Stop");
+lcd.setCursor(0,1);lcd.print("1-3:Change Flow");
+lcd.setCursor(0,2);lcd.print("5:Stat 8:Home 9:Jog");
+lcd.setCursor(0,3);lcd.print("0:Params D:Help");
+}
+
+void loop() {
+getkey= keypad.getKey();
+
+// if 0 is pressed then show parameters
+if(getkey=='0')
+{
+  StatScreen(vola, flowa, syravol, volb, flowb, syrbvol, volc, flowc, syrcvol); 
+}
+
+//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+////if key A is pressed
+if (getkey=='A')
+{
+  if(Aon==1)
+  {
+    Aon=0;
+    digitalWrite(aenpin,HIGH);
+  }
+  else
+  {
+    Aon = 1;
+    digitalWrite(aenpin,LOW); 
+  }
+}
+if (digitalRead(arefpin) == 0) //pump should reverse after hitting endstop
+{
+  digitalWrite(aenpin, HIGH);
+  digitalWrite(adirpin, LOW);
+  digitalWrite(avalvdir,HIGH);
+  digitalWrite(avalven,LOW);
+  for(vacount=0; vacount<800 ; vacount++) //index valve to reservoir (2)
+  {
+    digitalWrite(avalvstep, HIGH);
+    delayMicroseconds(delayV);
+    digitalWrite(avalvstep, LOW);
+    delayMicroseconds(delayV);
+  }
+  digitalWrite(aenpin,LOW);
+
+  while (refilla < refillcounta) //refills syringe
+  {
+    digitalWrite(asteppin, HIGH);
+    delayMicroseconds(delayRefill);
+    digitalWrite(asteppin, LOW);
+    delayMicroseconds(delayRefill);
+    refilla++;
+  }
+  //reset direction of motors upon refill complete
+  digitalWrite(adirpin, HIGH);
+  digitalWrite(avalven,LOW);
+  digitalWrite(avalvdir,LOW);
+  for(vacount=0;vacount<800;vacount++) //index valve back to system (1)
+  {
+    digitalWrite(avalvstep, HIGH);
+    delayMicroseconds(delayV);
+    digitalWrite(avalvstep, LOW);
+    delayMicroseconds(delayV);
+   }
+  digitalWrite(avalven,HIGH);
+  refilla = 0;
+  refillcounta =0;
+}
+if (Aon == 1 && voladdeda < vola)
+{
+  curA = micros();
+  if (curA-prevA >= delayA)
+  {
+    prevA=curA;
+    digitalWrite(adirpin,HIGH);
+    digitalWrite(asteppin,HIGH);
+    digitalWrite(asteppin,LOW);
+    refillcounta++;
+    countp1++;
+    voladdeda =(syravol*((countp1*(P/3200))/xa)); //counts/SPR x pitch gives linear distance. 
+                                                  //linear distance/total distance gives prop volume pumped 
+  }                                                                                        
+}
+//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+  
+//key B is pressed
+if (getkey=='B')
+{
+  if(Bon==1)
+  {
+    Bon=0;
+    digitalWrite(benpin,HIGH);
+  }
+  else
+  {
+    Bon = 1;
+    digitalWrite(benpin,LOW); 
+  }
+}
+if (digitalRead(brefpin) == 0) //pump should reverse after hitting endstop
+{
+  digitalWrite(benpin, HIGH);
+  digitalWrite(bdirpin, LOW);
+  digitalWrite(bvalvdir,HIGH);
+  digitalWrite(bvalven,LOW);
+  for(vbcount=0; vbcount<800 ; vbcount++) //index valve to reservoir (2)
+  {
+    digitalWrite(bvalvstep, HIGH);
+    delayMicroseconds(delayV);
+    digitalWrite(bvalvstep, LOW);
+    delayMicroseconds(delayV);
+  }
+  digitalWrite(benpin,LOW);
+
+  while (refillb < refillcountb) //refills syringe
+  {
+    digitalWrite(bsteppin, HIGH);
+    delayMicroseconds(delayRefill);
+    digitalWrite(bsteppin, LOW);
+    delayMicroseconds(delayRefill);
+    refillb++;
+  }
+  //reset direction of motors upon refill complete
+  digitalWrite(bdirpin, HIGH);
+  digitalWrite(bvalven,LOW);
+  digitalWrite(bvalvdir,LOW);
+  for(vbcount=0;vbcount<800;vbcount++) //index valve back to system (1)
+  {
+    digitalWrite(bvalvstep, HIGH);
+    delayMicroseconds(delayV);
+    digitalWrite(bvalvstep, LOW);
+    delayMicroseconds(delayV);
+   }
+  digitalWrite(bvalven,HIGH);
+  refillb = 0;
+  refillcountb =0;
+}
+if (Bon == 1 && voladdedb < volb)
+{
+    curB=micros();
+    if(curB-prevB >= delayB)
+    {
+    prevB=curB;
+    digitalWrite(bdirpin,HIGH);
+    digitalWrite(bsteppin,HIGH);
+    digitalWrite(bsteppin,LOW);
+    refillcountb++;
+    countp2++;
+    voladdedb =(syrbvol*((countp2*(P/3200))/xb)); //counts/SPR x pitch gives linear distance. 
+    }                                              //linear distance/total distance gives prop volume pumped                                            
+}
+//CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+//key C is pressed
+if (getkey=='C')
+{
+  if(Con==1)
+  {
+    Con=0;
+    digitalWrite(cenpin,HIGH);
+  }
+  else
+  {
+    Con = 1;
+    digitalWrite(cenpin,LOW); 
+  }
+}
+if (digitalRead(crefpin) == 0) //pump should stop after hitting endstop
+{
+  digitalWrite(cenpin, HIGH);
+}
+if (Con == 1 && voladdedc < volc)
+{
+    curC=micros();
+    if (curC-prevC >= delayC)
+    {
+    prevC=curC;
+    digitalWrite(cdirpin,HIGH);
+    digitalWrite(csteppin,HIGH);
+    digitalWrite(csteppin,LOW);
+    countp3++;
+    voladdedc =(syrcvol*((countp3*(P/3200))/xc)); //counts/SPR x pitch gives linear distance. 
+    }                                              //linear distance/total distance gives prop volume pumped                                            
+}
+
+/// if key 1 is pressed 11111111111111111111111111111111111111111
+if (getkey=='1')
+{
+  lcd.clear();
+  do {
+          voladdeda=0;
+          countp1=0;
+           do {
+              //Menu 1: syringe volume and pump rate
+              getkey=keypad.getKey();
+              lcd.setCursor(0,0);
+              lcd.print("Pump A");
+              lcd.setCursor(9,0);lcd.print("VolA:");lcd.print(vola); lcd.print("ml");
+              lcd.setCursor(0,1);
+              lcd.print("Syringe: "); lcd.print(syringe[syra]);lcd.print(" mL ");
+              lcd.setCursor(0,2);
+              lcd.print("Flow: "); lcd.print(flowa); lcd.setCursor(11,2); lcd.print("\344L/min ");
+              lcd.setCursor(0,3);
+              lcd.print("Next: # Save: *");
+          
+              if(getkey=='1'){
+                syra++;
+              }
+              if(getkey=='7'){
+                syra--;
+              }
+              if (syra>5){
+                syra=5;
+              }
+              if(syra<0){
+                syra=0;
+              }
+              syravol=syringe[syra];
+              xa=x[syra];
+           }while(getkey!='#' && getkey!='*');
+
+          delay(10);
+            //menu 1: input flow rate (waits for #)
+            if (getkey == '#')
+            {
+              flowa=ReadKeyD(6,2,5);
+              lcd.setCursor(7,2);lcd.print(flowa);lcd.print("   \344L/min ");
+              delay(10);
+            
+            //menu 2: volume to pump (waits for #)
+            lcd.clear();
+            lcd.setCursor(0,0); lcd.print("Input");
+            lcd.setCursor(11,0); lcd.print("VolA");
+          
+            lcd.setCursor(0,1); lcd.print("VolA: "); lcd.print(vola); lcd.setCursor(12,1); lcd.print("ml");
+            lcd.setCursor(0,2); lcd.print("New Value: ");
+                
+            vola=ReadKeyD(11,2,4);
+            delay(10);
+            lcd.clear();
+            
+            }
+            //speed is a function of the pulses per second. Smaller delay will result in faster motor movement.
+            
+            delayA=((6*(10000000000L)*P*syravol)/(SPR*xa*flowa));
+  }while (getkey!='*');
+  
+StatScreen(vola, flowa, syravol, volb, flowb, syrbvol, volc, flowc, syrcvol); 
+}
+  
+// if key 2 is pressed 2222222222222222222222222222222222222222222
+if (getkey=='2')
+{
+  lcd.clear();     
+  do{ 
+    voladdedb = 0;
+    countp2 =0;
+    do{
+      //menu 1:syringe volume and pump rate
+      getkey= keypad.getKey();
+      lcd.setCursor(0,0);
+      lcd.print("Pump B");
+      lcd.setCursor(9,0);lcd.print("VolB:");lcd.print(volb); lcd.print("ml");
+      lcd.setCursor(0,1);
+      lcd.print("Syringe: "); lcd.print(syringe[syrb]);lcd.print(" mL ");
+      lcd.setCursor(0,2);
+      lcd.print("Flow: "); lcd.print(flowb); lcd.setCursor(11,2); lcd.print("\344L/min ");
+      lcd.setCursor(0,3);
+      lcd.print("Next: # Save: *");
+  
+      if (getkey=='1'){
+        syrb++;
+      }
+      if (getkey=='7'){
+        syrb--;
+      }
+      if (syrb>5){
+        syrb=5;
+      }
+      if (syrb<0){
+        syrb=0;
+      }
+      syrbvol=syringe[syrb];
+      xb=x[syrb];
+  }while(getkey!='#' && getkey!='*');
+
+    delay(10);
+    //menu 1:input flow rate (waits for #)
+    if (getkey == '#')
+    {
+      flowb=ReadKeyD(6,2,5);
+      lcd.setCursor(7,2);lcd.print(flowb);lcd.print("   \344L/min ");
+      delay(10);
+
+      //menu 2: volume to pump (waits for #)
+      lcd.clear();
+      lcd.setCursor(0,0); lcd.print("Input");
+      lcd.setCursor(11,0); lcd.print("VolB");
+      lcd.setCursor(0,1); lcd.print("VolB: "); lcd.print(volb); lcd.setCursor(12,1); lcd.print("ml");
+      lcd.setCursor(0,2); lcd.print("New Value: ");
+    
+      volb=ReadKeyD(11,2,4);
+      delay(10);
+      lcd.clear();
+    }
+      delayB=((6*(10000000000L)*P*syrbvol)/(SPR*xb*flowb));
+      delay(10);
+              
+  }while(getkey!='*');
+
+StatScreen(vola, flowa, syravol, volb, flowb, syrbvol, volc, flowc, syrcvol); 
+}
+
+// if key 3 is pressed 3333333333333333333333333333333333333333333
+if (getkey=='3')
+{
+  voladdedc=0;
+  countp3=0;
+  lcd.clear();     
+  do{ 
+    
+    do{
+      //menu 1:syringe volume and pump rate
+      getkey= keypad.getKey();
+      lcd.setCursor(0,0);
+      lcd.print("Pump C");
+      lcd.setCursor(9,0);lcd.print("VolC:");lcd.print(volc); lcd.print("ml");
+      lcd.setCursor(0,1);
+      lcd.print("Syringe: "); lcd.print(syringe[syrc]);lcd.print(" mL ");
+      lcd.setCursor(0,2);
+      lcd.print("Flow: "); lcd.print(flowc); lcd.setCursor(11,2); lcd.print("\344L/min ");
+      lcd.setCursor(0,3);
+      lcd.print("Next: # Save: *");
+  
+      if (getkey=='1'){
+        syrc++;
+      }
+      if (getkey=='7'){
+        syrc--;
+      }
+      if (syrc>5){
+        syrc=5;
+      }
+      if (syrc<0){
+        syrc=0;
+      }
+      syrcvol=syringe[syrc];
+      xc=x[syrc];
+  }while(getkey!='#' && getkey!='*');
+
+    delay(10);
+    //menu 1:input flow rate (waits for #)
+    if (getkey == '#')
+    {
+      flowc=ReadKeyD(6,2,5);
+      lcd.setCursor(7,2);lcd.print(flowc);lcd.print("   \344L/min ");
+      delay(10);
+
+      //menu 2: volume to pump (waits for #)
+      lcd.clear();
+      lcd.setCursor(0,0); lcd.print("Input");
+      lcd.setCursor(11,0); lcd.print("VolC");
+      lcd.setCursor(0,1); lcd.print("VolC: "); lcd.print(volc); lcd.setCursor(12,1); lcd.print("ml");
+      lcd.setCursor(0,2); lcd.print("New Value: ");
+    
+      volc=ReadKeyD(11,2,4);
+      delay(10);
+      lcd.clear();
+    }
+      delayC=((6*(10000000000L)*P*syrcvol)/(SPR*xc*flowc));
+      Serial.print(delayC);
+      delay(10);
+              
+  }while(getkey!='*');
+
+StatScreen(vola, flowa, syravol, volb, flowb, syrbvol, volc, flowc, syrcvol); 
+}
+
+//instructions page DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+if (getkey=='D')
+{
+lcd.clear();
+lcd.setCursor(0,0);lcd.print("A-C:Start/Stop");
+lcd.setCursor(0,1);lcd.print("1-3:Change Flow");
+lcd.setCursor(0,2);lcd.print("5:Stat 8:Home 9:Jog");
+lcd.setCursor(0,3);lcd.print("0:Params D:Help");
+}
+
+//homing routine 88888888888888888888888888888888
+if (getkey == '8')
+{
+lcd.clear();
+lcd.setCursor(0,0);
+lcd.print("Homing");
+//Homing routine
+digitalWrite(aenpin, LOW);
+digitalWrite(benpin, LOW);
+digitalWrite(cenpin, LOW);
+
+do
+{
+  if(rev1 == 0)
+  {
+    digitalWrite(adirpin,HIGH);
+    digitalWrite(asteppin,HIGH);
+    digitalWrite(asteppin,LOW);
+    delayMicroseconds(50);
+  }
+  if (digitalRead(arefpin) ==0){rev1 = 1;}
+  if(rev2 == 0)
+  {
+    digitalWrite(bdirpin,HIGH);
+    digitalWrite(bsteppin,HIGH);
+    digitalWrite(bsteppin,LOW);
+    delayMicroseconds(50);
+  }
+  if (digitalRead(brefpin) ==0){rev2=1;}
+  if (rev3 ==0)
+  {
+    digitalWrite(cdirpin, HIGH);
+    digitalWrite(csteppin, HIGH);
+    digitalWrite(csteppin, LOW);
+    delayMicroseconds(50);
+  }
+  if (digitalRead(crefpin) ==0){rev3=1;}
+  if(rev1 == 1 && trav1<(xa+1))
+  {
+    digitalWrite(adirpin,LOW);
+    digitalWrite(asteppin,HIGH);
+    digitalWrite(asteppin,LOW);
+    delayMicroseconds(50);
+    countp1++;
+  }
+    if(rev2 == 1 && trav2<(xb+1))
+  {
+    digitalWrite(bdirpin,LOW);
+    digitalWrite(bsteppin,HIGH);
+    digitalWrite(bsteppin,LOW);
+    delayMicroseconds(50);
+    countp2++;
+  }
+  if (rev3 == 1 && trav3<(xc+1))
+  {
+    digitalWrite(cdirpin, LOW);
+    digitalWrite(csteppin, HIGH);
+    digitalWrite(csteppin, LOW);
+    delayMicroseconds(50);
+    countp3++;
+  }
+  trav1 = (countp1/SPR)*8;
+  trav2 = (countp2/SPR)*8;
+  trav3 = (countp3/SPR)*8;
+  if (trav1 > xa){home1 = 1;}
+  if (trav2 > xb){home2 = 1;}
+  if (trav3 > xc){home3 = 1;}
+}while(home1 != 1 || home2 != 1 || home3 != 1);
+countp1=0;countp2=0;countp3=0;
+StatScreen(vola, flowa, syravol, volb, flowb, syrbvol, volc, flowc, syrcvol); 
+}
+
+//Jog menu allows pumps to be jogged to position 9999999999999999999999999999999999999999
+if (getkey=='9')
+{
+  lcd.clear();
+  Aon = 0;  Bon =0; Con =0;
+  rev1 = 0; rev2 = 0; rev3 = 0;
+  digitalWrite(aenpin,LOW);
+  digitalWrite(benpin,LOW);
+  digitalWrite(cenpin,LOW);
+  lcd.print("Jog Pumps. Exit #");
+  lcd.setCursor(0,1);
+  lcd.print("Pump A: FWD 1 REV 4");
+  lcd.setCursor(0,2);
+  lcd.print("Pump B: FWD 2, REV 5");
+  lcd.setCursor(0,3);
+  lcd.print("Pump C: FWD 3, REV 6");
+  do
+  {
+    getkey= keypad.getKey();
+    if (getkey == '1')
+    {
+      if (Aon == 1){Aon = 0;}else{Aon=1;}
+    }
+    if (getkey == '4')
+    {
+      if (rev1 ==1){rev1 =0;}else{rev1 =1;}
+    }
+    if (getkey == '2')
+    {
+      if (Bon ==1){Bon =0;}else{Bon=1;}
+    }
+    if (getkey == '5')
+    {
+      if (rev2 == 1){rev2 = 0;}else{rev2 =1;}
+    }
+    if (getkey == '3')
+    {
+      if (Con == 1){Con = 0;}else{Con=1;}
+    }
+    if (getkey == '6')
+    {
+      if (rev3 ==1){rev3 = 0;}else{rev3 = 1;}
+    }
+    if (Aon == 1)
+    {
+      digitalWrite(adirpin,HIGH);
+      digitalWrite(asteppin,HIGH);
+      digitalWrite(asteppin,LOW);
+      delayMicroseconds(300);
+    }
+    if (rev1 == 1)
+    {
+      digitalWrite(adirpin,LOW);
+      digitalWrite(asteppin,HIGH);
+      digitalWrite(asteppin,LOW);
+      delayMicroseconds(300);
+    }
+    if (Bon == 1)
+    {
+      digitalWrite(bdirpin,HIGH);
+      digitalWrite(bsteppin,HIGH);
+      digitalWrite(bsteppin,LOW);
+      delayMicroseconds(300);
+    }
+    if (rev2 == 1)
+    {
+      digitalWrite(bdirpin,LOW);
+      digitalWrite(bsteppin,HIGH);
+      digitalWrite(bsteppin,LOW);
+      delayMicroseconds(300);
+    }
+    if (Con == 1)
+    {
+      digitalWrite(cdirpin,HIGH);
+      digitalWrite(csteppin,HIGH);
+      digitalWrite(csteppin,LOW);
+      delayMicroseconds(300);
+      
+    }
+    if (rev3 == 1)
+    {
+      digitalWrite(cdirpin,LOW);
+      digitalWrite(csteppin,HIGH);
+      digitalWrite(csteppin,LOW);
+      delayMicroseconds(300);
+    } 
+  }while(getkey != '#');
+StatScreen(vola, flowa, syravol, volb, flowb, syrbvol, volc, flowc, syrcvol); 
+}
+if (getkey == '5')
+{
+  lcd.clear();
+  lcd.setCursor(0,0);lcd.print("A: ");lcd.print(voladdeda);lcd.print("/");lcd.print(vola);lcd.print("ml");
+  lcd.setCursor(0,1);lcd.print("B: ");lcd.print(voladdedb);lcd.print("/");lcd.print(volb);lcd.print("ml");
+  lcd.setCursor(0,2);lcd.print("C: ");lcd.print(voladdedc);lcd.print("/");lcd.print(volc);lcd.print("ml");
+  lcd.setCursor(0,3);lcd.print("0:Params");
+}
+}// the void loop ends here
