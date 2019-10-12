@@ -1,0 +1,710 @@
+// X Motor on RAMPS, define pins / Pump A
+const int asteppin = 54;
+const int adirpin = 55;
+const int aenpin = 38;
+const int arefpin = 3; //Xminpin on RAMPS
+// Y Motor on RAMPS, define pins / Pump B
+const int bsteppin = 60;
+const int bdirpin = 61;
+const int benpin = 56;
+const int brefpin = 2; //Xmaxpin on RAMPS
+// Z Motor on RAMPS,define pins / Pump C
+const int csteppin = 46;
+const int cdirpin = 48;
+const int cenpin = 62;
+const int crefpin = 14; //Yminpin on RAMPS
+// E Motor on RAMPS, define pins / Pump D
+const int dsteppin = 26;
+const int ddirpin = 28;
+const int denpin = 24;
+const int drefpin = 15; //Ymaxpin on RAMPS
+long delaya = 240384;
+long delayb = 240384;
+long delayc = 240384;
+long delayd = 240384;
+int vola = 0;    
+int volb = 0;
+int volc = 0;
+int vold = 0;
+int flowa = 0;    
+int flowb = 0;
+int flowc = 0;
+int flowd = 0;
+int syra = 3;  //start with syringe nunmber 4 = in our case 10 mL
+int syrb = 3;
+int syrc = 3;
+int syrd = 3;
+float corr = 0.993; //correction factor for dispensed volume
+long factor = 375000000; // factor from mm/mL --> µL/min   (60*1000*1000 [µs] / (200 [steps per round  / 1.25 [mm per round] /1000))   normal 375000000
+char getkey;
+int syringe[6] = {1, 2, 5, 10, 20, 50};  // change the values  to your syringes in mL
+float syringefactor[6] = {58.310, 16.616, 8.459, 5.130, 3.200, 1.548}; //type in your syringes here: 58.310 mm/mL is for our 1 mL syringe ....1.548 mm/mL is for our 50 mL syringe...etc.
+unsigned long previousMicrosa = 0;
+unsigned long currentMicrosa = 0;
+unsigned long previousMicrosb = 0;
+unsigned long currentMicrosb = 0;
+unsigned long previousMicrosc = 0;
+unsigned long currentMicrosc = 0;
+unsigned long previousMicrosd = 0;
+unsigned long currentMicrosd = 0;
+unsigned long cura = 0;
+unsigned long preva = 0;
+unsigned long curb = 0;
+unsigned long prevb = 0;
+unsigned long curc = 0;
+unsigned long prevc = 0;
+unsigned long curd = 0;
+unsigned long prevd = 0;
+unsigned long addeda = 0;
+unsigned long addedb = 0;
+unsigned long addedc = 0;
+unsigned long addedd = 0;
+int timestatea = 0;
+int timestateb = 0;
+int timestatec = 0;
+int timestated = 0;
+int astate = 0;
+int bstate = 0;
+int cstate = 0;
+int dstate = 0;
+unsigned long cycleTime;
+unsigned long cycleCount;
+
+// display and keypad
+#include <Keyboard.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+#include <Keypad.h>
+const byte ROWS = 4; //four rows
+const byte COLS = 4; //four columns
+char keys[ROWS][COLS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+byte rowPins[ROWS] = {33, 31, 29, 27}; //Rows 0 to 4
+byte colPins[COLS] = {25, 23, 17, 16}; //Columns 0 to 4
+Keypad keypad = Keypad( makeKeymap(keys), rowPins, colPins, ROWS, COLS ); //initializes an instance of the Keypad class
+
+void setup() {
+Serial.begin(9600);
+  // define motor
+  pinMode(asteppin, OUTPUT);
+  pinMode(adirpin, OUTPUT);
+  pinMode(aenpin, OUTPUT);
+  pinMode(arefpin, INPUT);
+  digitalWrite(aenpin, HIGH); //low = enable
+  pinMode(bsteppin, OUTPUT);
+  pinMode(bdirpin, OUTPUT);
+  pinMode(benpin, OUTPUT);
+  pinMode(brefpin, INPUT);
+  digitalWrite(benpin, HIGH); //low = enable
+  pinMode(csteppin, OUTPUT);
+  pinMode(cdirpin, OUTPUT);
+  pinMode(cenpin, OUTPUT);
+  pinMode(crefpin, INPUT);
+  digitalWrite(cenpin, HIGH); //low = enable
+  pinMode(dsteppin, OUTPUT);
+  pinMode(ddirpin, OUTPUT);
+  pinMode(denpin, OUTPUT);
+  pinMode(drefpin, INPUT);
+  digitalWrite(denpin, HIGH); //low = enable
+
+  //lcd.begin();
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("A-C: Start / Stop");
+  lcd.setCursor(0, 1); lcd.print("1-4: Change Flow");
+  lcd.setCursor(0, 2); lcd.print("5-8: Reset Volume");
+  lcd.setCursor(0, 3); lcd.print("0: Refresh Display");
+}
+
+void loop() {
+
+  getkey = keypad.getKey();
+
+  // added vol A
+  if (timestatea == 1) {
+    cura = micros();
+    if (cura - preva >= 10000*corr) {
+      preva = cura;
+      addeda = (flowa + addeda);
+    }
+  }
+  if (timestateb == 1) {
+    curb = micros();
+    if (curb - prevb >= 10000*corr) {
+      prevb = curb;
+      addedb = flowb + addedb;
+    }
+  }
+  if (timestatec == 1) {
+    curc = micros();
+    if (curc - prevc >= 10000*corr) {
+      prevc = curc;
+      addedc = flowc + addedc;
+    }
+  }
+  if (timestated == 1) {
+    curd = micros();
+    if (curd - prevd >= 10000*corr) {
+      prevd = curd;
+      addedd = flowd + addedd;
+    }
+  }
+ //000000000000 refresh display
+  if (getkey == '0') {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("A "); lcd.print(vola); lcd.print("mL "); lcd.print(flowa);
+    lcd.setCursor(0, 1);
+    lcd.print("B "); lcd.print(volb); lcd.print("mL "); lcd.print(flowb);
+    lcd.setCursor(0, 2);
+    lcd.print("C "); lcd.print(volc); lcd.print("mL "); lcd.print(flowc);
+    lcd.setCursor(0, 3);
+    lcd.print("D "); lcd.print(vold); lcd.print("mL "); lcd.print(flowd);
+    if (astate == 1) {
+      lcd.setCursor(19, 0); lcd.print("\377");
+    } else {
+      lcd.setCursor(19, 0); lcd.print(" ");
+    }
+    if (bstate == 1) {
+      lcd.setCursor(19, 1); lcd.print("\377");
+    } else {
+      lcd.setCursor(19, 1); lcd.print(" ");
+    }
+    if (cstate == 1) {
+      lcd.setCursor(19, 2); lcd.print("\377");
+    } else {
+      lcd.setCursor(19, 2); lcd.print(" ");
+    }
+    if (dstate == 1) {
+      lcd.setCursor(19, 3); lcd.print("\377");
+    } else {
+      lcd.setCursor(19, 3); lcd.print(" ");
+    }
+     lcd.setCursor(13, 0);
+      if (addeda < 60000) lcd.print("    ");
+      if (addeda >= 60000 && addeda < 600000)  lcd.print("   ");
+      if (addeda >= 600000 && addeda < 6000000)  lcd.print("  ");
+      if (addeda >= 6000000 && addeda < 60000000)  lcd.print(" ");
+      lcd.print(addeda / 6000); // divided through 6000 due to 10000 µs frequency
+      lcd.setCursor(13, 1);
+      if (addedb < 60000) lcd.print("    ");
+      if (addedb >= 60000 && addedb < 600000)  lcd.print("   ");
+      if (addedb >= 600000 && addedb < 6000000)  lcd.print("  ");
+      if (addedb >= 6000000 && addedb < 60000000)  lcd.print(" ");
+      lcd.print(addedb / 6000);
+      lcd.setCursor(13, 2);
+      if (addedc < 60000) lcd.print("    ");
+      if (addedc >= 60000 && addedc < 600000)  lcd.print("   ");
+      if (addedc >= 600000 && addedc < 6000000)  lcd.print("  ");
+      if (addedc >= 6000000 && addedc < 60000000)  lcd.print(" ");
+      lcd.print(addedc / 6000);
+      lcd.setCursor(13, 3);
+      if (addedd < 60000) lcd.print("    ");
+      if (addedd >= 60000 && addedd < 600000)  lcd.print("   ");
+      if (addedd >= 600000 && addedd < 6000000)  lcd.print("  ");
+      if (addedd >= 6000000 && addedd < 60000000)  lcd.print(" ");
+      lcd.print(addedd / 6000);
+  }
+
+  //55555555555555555555555
+  if (getkey == '5') {  // if 5 pressed, reset added A ...
+    addeda = 0;
+  }
+  //6666666666666
+  if (getkey == '6') {
+    addedb = 0;
+  }
+  //777777777
+  if (getkey == '7') {
+    addedc = 0;
+  }
+  //88888888888888
+  if (getkey == '8') {
+    addedd = 0;
+  }
+  //AAAAAAAAAAAAAAAAAAAAA
+
+  if (getkey == 'A')
+  {
+    if (astate == 1) {
+      astate = 0;
+      digitalWrite(aenpin, HIGH);
+    } else {
+      astate = 1;
+      digitalWrite(aenpin, LOW);
+    }
+    if (timestatea == 1) {
+      timestatea = 0;
+    } else {
+      timestatea = 1;
+    }
+  }
+  if (digitalRead(arefpin) == 0) // end stopp
+  {
+    astate = 0;
+    timestatea = 0;
+    digitalWrite(aenpin, HIGH);
+  }
+
+  // if A pressed, pump A starts
+  if (astate == 1) {
+    currentMicrosa = micros();
+    if (currentMicrosa - previousMicrosa >= delaya) {
+
+      previousMicrosa = currentMicrosa;
+      digitalWrite(adirpin, HIGH);
+      digitalWrite(asteppin, HIGH);
+      digitalWrite(asteppin, LOW);
+    }
+  }
+  //BBBBBBBBBBBBBBBBBBBBBB
+
+  if (getkey == 'B')
+  {
+    if (bstate == 1) {
+      bstate = 0;
+      digitalWrite(benpin, HIGH);
+    } else {
+      bstate = 1;
+      digitalWrite(benpin, LOW);
+    }
+    if (timestateb == 1) {
+      timestateb = 0;
+    } else {
+      timestateb = 1;
+    }
+  }
+  if (digitalRead(brefpin) == 0)
+  {
+    bstate = 0;
+    timestateb = 0;
+    digitalWrite(benpin, HIGH);
+  }
+  if (bstate == 1) {
+    currentMicrosb = micros();
+    if (currentMicrosb - previousMicrosb >= delayb) {
+      previousMicrosb = currentMicrosb;
+      digitalWrite(bdirpin, HIGH);
+      digitalWrite(bsteppin, HIGH);
+      digitalWrite(bsteppin, LOW);
+    }
+  }
+  //CCCCCCCCCCCCCCCCCCCCCCCCCCCC
+
+  if (getkey == 'C')
+  {
+    if (cstate == 1) {
+      cstate = 0;
+      digitalWrite(cenpin, HIGH);
+    } else {
+      cstate = 1;
+      digitalWrite(cenpin, LOW);
+    }
+    if (timestatec == 1) {
+      timestatec = 0;
+    } else {
+      timestatec = 1;
+    }
+  }
+  if (digitalRead(crefpin) == 0)
+  {
+    cstate = 0;
+    timestatec = 0;
+    digitalWrite(cenpin, HIGH);
+  }
+  if (cstate == 1) {
+    currentMicrosc = micros();
+    if (currentMicrosc - previousMicrosc >= delayc) {
+      previousMicrosc = currentMicrosc;
+      digitalWrite(cdirpin, HIGH);
+      digitalWrite(csteppin, HIGH);
+      digitalWrite(csteppin, LOW);
+    }
+  }
+  //DDDDDDDDDDDDDDDDDDDDDDDDDDD
+
+  if (getkey == 'D')
+  {
+    if (dstate == 1) {
+      dstate = 0;
+      digitalWrite(denpin, HIGH);
+    } else {
+      dstate = 1;
+      digitalWrite(denpin, LOW);
+    }
+    if (timestated == 1) {
+      timestated = 0;
+    } else {
+      timestated = 1;
+    }
+  }
+  if (digitalRead(drefpin) == 0)
+  {
+    dstate = 0;
+    timestated = 0;
+    digitalWrite(denpin, HIGH);
+  }
+  if (dstate == 1) {
+    currentMicrosd = micros();
+    if (currentMicrosd - previousMicrosd >= delayd) {
+      previousMicrosd = currentMicrosd;
+      digitalWrite(ddirpin, HIGH);
+      digitalWrite(dsteppin, HIGH);
+      digitalWrite(dsteppin, LOW);
+    }
+  }
+  //1111111111111111111111
+
+  if (getkey == '1') {
+    lcd.clear();
+    do {
+      if (astate == 1) {
+        (timestatea = 0);
+      }
+      if (bstate == 1) {
+        (timestateb = 0);
+      }
+      if (cstate == 1) {
+        (timestatec = 0);
+      }
+      if (dstate == 1) {
+        (timestated = 0);
+      }
+
+      getkey = keypad.getKey();
+      lcd.setCursor(0, 0);
+      lcd.print("Pump A:");
+      lcd.setCursor(0, 1);
+      lcd.print("Syringe: "); lcd.print(syringe[syra]); lcd.print(" mL  ");
+      lcd.setCursor(19, 1); lcd.print("\177");
+      lcd.setCursor(0, 2);
+      lcd.print("Flow: "); lcd.print(flowa); lcd.print(" \344L/min  ");
+      lcd.setCursor(0, 3);
+      lcd.print("Next: # Save: *");
+
+      if (getkey == '1' ) {
+        syra++;
+      }
+      if (getkey == '7' ) {
+        syra--;
+      }
+      if ( syra > 5) {
+        syra = 5;
+      };
+      if ( syra < 0) {
+        syra = 0;
+      };
+      vola = syringe[syra];
+
+      if (getkey == '#') {
+        getkey = keypad.getKey();
+        lcd.setCursor(19, 1); lcd.print(" ");
+        lcd.setCursor(7, 2); lcd.print("     \344L/min");
+        flowa = ReadKeyD(6, 2, 4);
+        lcd.setCursor(7, 2); lcd.print(flowa); lcd.print(" \344L/min  ");
+        delaya = (factor / (flowa * syringefactor[syra]));  // factor + 3%
+      }
+    } while (getkey != '*' );
+
+    lcd.clear();
+    lcd.print("A "); lcd.print(vola); lcd.print("mL "); lcd.print(flowa);
+    lcd.setCursor(0, 1);
+    lcd.print("B "); lcd.print(volb); lcd.print("mL "); lcd.print(flowb);
+    lcd.setCursor(0, 2);
+    lcd.print("C "); lcd.print(volc); lcd.print("mL "); lcd.print(flowc);
+    lcd.setCursor(0, 3);
+    lcd.print("D "); lcd.print(vold); lcd.print("mL "); lcd.print(flowd);
+
+    if (astate == 1) {
+      (timestatea = 1);
+    }
+    if (bstate == 1) {
+      (timestateb = 1);
+    }
+    if (cstate == 1) {
+      (timestatec = 1);
+    }
+    if (dstate == 1) {
+      (timestated = 1);
+    }
+  }
+  //222222222222222222222222
+
+  if (getkey == '2') {
+    lcd.clear();
+    do {
+      if (astate == 1) {
+        (timestatea = 0);
+      }
+      if (bstate == 1) {
+        (timestateb = 0);
+      }
+      if (cstate == 1) {
+        (timestatec = 0);
+      }
+      if (dstate == 1) {
+        (timestated = 0);
+      }
+      getkey = keypad.getKey();
+      lcd.setCursor(0, 0);
+      lcd.print("Pump B:");
+      lcd.setCursor(0, 1);
+      lcd.print("Syringe: "); lcd.print(syringe[syrb]); lcd.print(" mL  ");
+      lcd.setCursor(19, 1); lcd.print("\177");
+      lcd.setCursor(0, 2);
+      lcd.print("Flow: "); lcd.print(flowb); lcd.print(" \344L/min  ");
+      lcd.setCursor(0, 3);
+      lcd.print("Next: # Save: *");
+
+      if (getkey == '1' ) {
+        syrb++;
+      }
+      if (getkey == '7' ) {
+        syrb--;
+      }
+      if ( syrb > 5) {
+        syrb = 5;
+      };
+      if ( syrb < 0) {
+        syrb = 0;
+      };
+      volb = syringe[syrb];
+
+      if (getkey == '#') {
+        getkey = keypad.getKey();
+        lcd.setCursor(19, 1); lcd.print(" ");
+        lcd.setCursor(7, 2); lcd.print("     \344L/min");
+        flowb = ReadKeyD(6, 2, 4);
+        lcd.setCursor(7, 2); lcd.print(flowb); lcd.print(" \344L/min  ");
+        delayb = (factor / (flowb * syringefactor[syrb]));
+      }
+    } while (getkey != '*' );
+
+    lcd.clear();
+    lcd.print("A "); lcd.print(vola); lcd.print("mL "); lcd.print(flowa);
+    lcd.setCursor(0, 1);
+    lcd.print("B "); lcd.print(volb); lcd.print("mL "); lcd.print(flowb);
+    lcd.setCursor(0, 2);
+    lcd.print("C "); lcd.print(volc); lcd.print("mL "); lcd.print(flowc);
+    lcd.setCursor(0, 3);
+    lcd.print("D "); lcd.print(vold); lcd.print("mL "); lcd.print(flowd);
+    if (astate == 1) {
+      (timestatea = 1);
+    }
+    if (bstate == 1) {
+      (timestateb = 1);
+    }
+    if (cstate == 1) {
+      (timestatec = 1);
+    }
+    if (dstate == 1) {
+      (timestated = 1);
+    }
+  }
+  //33333333333333333333333333
+
+  if (getkey == '3') {
+    lcd.clear();
+    do {
+      if (astate == 1) {
+        (timestatea = 0);
+      }
+      if (bstate == 1) {
+        (timestateb = 0);
+      }
+      if (cstate == 1) {
+        (timestatec = 0);
+      }
+      if (dstate == 1) {
+        (timestated = 0);
+      }
+      getkey = keypad.getKey();
+      lcd.setCursor(0, 0);
+      lcd.print("Pump C:");
+      lcd.setCursor(0, 1);
+      lcd.print("Syringe: "); lcd.print(syringe[syrc]); lcd.print(" mL  ");
+      lcd.setCursor(19, 1); lcd.print("\177");
+      lcd.setCursor(0, 2);
+      lcd.print("Flow: "); lcd.print(flowc); lcd.print(" \344L/min  ");
+      lcd.setCursor(0, 3);
+      lcd.print("Next: # Save: *");
+
+      if (getkey == '1' ) {
+        syrc++;
+      }
+      if (getkey == '7' ) {
+        syrc--;
+      }
+      if ( syrc > 5) {
+        syrc = 5;
+      };
+      if ( syrc < 0) {
+        syrc = 0;
+      };
+      volc = syringe[syrc];
+
+      if (getkey == '#') {
+        getkey = keypad.getKey();
+        lcd.setCursor(19, 1); lcd.print(" ");
+        lcd.setCursor(7, 2); lcd.print("     \344L/min");
+        flowc = ReadKeyD(6, 2, 4);
+        lcd.setCursor(7, 2); lcd.print(flowc); lcd.print(" \344L/min  ");
+        delayc = (factor / (flowc * syringefactor[syrc]));
+      }
+    } while (getkey != '*' );
+
+    lcd.clear();
+    lcd.print("A "); lcd.print(vola); lcd.print("mL "); lcd.print(flowa);
+    lcd.setCursor(0, 1);
+    lcd.print("B "); lcd.print(volb); lcd.print("mL "); lcd.print(flowb);
+    lcd.setCursor(0, 2);
+    lcd.print("C "); lcd.print(volc); lcd.print("mL "); lcd.print(flowc);
+    lcd.setCursor(0, 3);
+    lcd.print("D "); lcd.print(vold); lcd.print("mL "); lcd.print(flowd);
+    if (astate == 1) {
+      (timestatea = 1);
+    }
+    if (bstate == 1) {
+      (timestateb = 1);
+    }
+    if (cstate == 1) {
+      (timestatec = 1);
+    }
+    if (dstate == 1) {
+      (timestated = 1);
+    }
+  }
+  //4444444444444444444444444444444
+
+  if (getkey == '4') {
+    lcd.clear();
+    do {
+      if (astate == 1) {
+        (timestatea = 0);
+      }
+      if (bstate == 1) {
+        (timestateb = 0);
+      }
+      if (cstate == 1) {
+        (timestatec = 0);
+      }
+      if (dstate == 1) {
+        (timestated = 0);
+      }
+      getkey = keypad.getKey();
+      lcd.setCursor(0, 0);
+      lcd.print("Pump 4:");
+      lcd.setCursor(0, 1);
+      lcd.print("Syringe: "); lcd.print(syringe[syrd]); lcd.print(" mL  ");
+      lcd.setCursor(19, 1); lcd.print("\177");
+      lcd.setCursor(0, 2);
+      lcd.print("Flow: "); lcd.print(flowd); lcd.print(" \344L/min  ");
+      lcd.setCursor(0, 3);
+      lcd.print("Next: # Save: *");
+
+      if (getkey == '1' ) {
+        syrd++;
+      }
+      if (getkey == '7' ) {
+        syrd--;
+      }
+      if ( syrd > 5) {
+        syrd = 5;
+      };
+      if ( syrd < 0) {
+        syrd = 0;
+      };
+      vold = syringe[syrd];
+
+      if (getkey == '#') {
+        getkey = keypad.getKey();
+        lcd.setCursor(19, 1); lcd.print(" ");
+        lcd.setCursor(7, 2); lcd.print("     \344L/min");
+        flowd = ReadKeyD(6, 2, 4);
+        lcd.setCursor(7, 2); lcd.print(flowd); lcd.print(" \344L/min  ");
+        delayd = (factor / (flowd * syringefactor[syrd]));
+      }
+    } while (getkey != '*' );
+
+    lcd.clear();
+    lcd.print("A "); lcd.print(vola); lcd.print("mL "); lcd.print(flowa);
+    lcd.setCursor(0, 1);
+    lcd.print("B "); lcd.print(volb); lcd.print("mL "); lcd.print(flowb);
+    lcd.setCursor(0, 2);
+    lcd.print("C "); lcd.print(volc); lcd.print("mL "); lcd.print(flowc);
+    lcd.setCursor(0, 3);
+    lcd.print("D "); lcd.print(vold); lcd.print("mL "); lcd.print(flowd);
+    if (astate == 1) {
+      (timestatea = 1);
+    }
+    if (bstate == 1) {
+      (timestateb = 1);
+    }
+    if (cstate == 1) {
+      (timestatec = 1);
+    }
+    if (dstate == 1) {
+      (timestated = 1);
+    }
+  }
+
+
+
+  /* 
+  cycleCount++;
+  if (cycleCount >= 100000)
+  {
+    lcd.clear();
+    lcd.print("Cycle Time: ");
+    lcd.print((micros() - cycleTime) / cycleCount);
+    lcd.print(" microsec");
+    cycleCount = 0;
+    cycleTime = micros();
+  }*/
+
+
+} //loop
+
+// type numbers
+
+int ReadKeyD(int column, int row, int x) {
+  char keypressed = ' ';
+  int ZReturn = 0;
+  int i = 0;
+  String SInput = " ";
+  char  StopChar = '-';
+  char EnterChar = "-";
+  lcd.setCursor(column, row);
+  lcd.print( '_' );
+  do {
+    keypressed = keypad.getKey();
+
+    if (isDigit(keypressed) == true) {
+      if ( i < x ) {
+        SInput += keypressed;
+        //LZ=keypressed;
+        lcd.setCursor(column, row);
+        lcd.print( keypressed );
+        column ++ ;
+        i ++;
+        if (i < x) {
+          lcd.print( "_");
+        }
+      }
+    }
+  } while ((keypressed != '#'));  // && (i < x));
+  if (column < 20 ) {
+    lcd.setCursor(column, row);
+    lcd.print( " ");
+  }
+  EnterChar = '-';
+  StopChar  = '-';
+  return SInput.toInt();
+}
